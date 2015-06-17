@@ -1,5 +1,27 @@
 #!/usr/bin/env python
 # coding: utf-8
+__doc__ = """Lake filter.
+
+Removes water (lakes) of a certain size, based on the input map.
+
+Usage:
+  {filename} <fine_land_sea_mask> <min_lake_area_km2> [--domain <domain> | (--lats <lat_min> <lat_max> --lons <lon_min> <lon_max>)] [-d|-v] [--log-filename <logfile>]
+  {filename} (-h | --help)
+
+Positional arguments:
+  fine_land_sea_mask    The land/sea mask with fine grid.
+  min_lake_area_km2     The size (km2) of the lakes to remove
+
+Options:
+  -h, --help                       Show this help message and exit.
+  --domain=<domain>                The domain to create the mask for. Pick from <list of domains>.
+  --lats                           Latitude boundaries. Min value and max value.
+  --lons                           Longitude boundaries. Min value and max value.
+  -d --debug                       Output debugging information.
+  -v --verbose                     Output info.
+  --log-filename <filename>        File used to output logging information.
+""".format(filename=__file__)
+
 import logging
 import os
 import numpy as np
@@ -40,7 +62,7 @@ def km_2_lons(distance_km, latitude):
 def km_2_lats(distance_km):
     return distance_km/EARTH_ONE_MEAN_DEG_KM
 
-def get_lat_lon_indexes(lats, lons, lat_lons):
+def get_lat_lon_indexes(lats, lons, lat_min, lat_max, lon_min, lon_max):
     """
     Gets the indexes that corresponds to the ranges given in the input.
 
@@ -60,26 +82,27 @@ def get_lat_lon_indexes(lats, lons, lat_lons):
     1, 2, 2, 6
 
     """
-    if lat_lons == None:
-        lat_min_index = 0
-        lat_max_index = int(lats.shape[0]) - 1
-        lon_min_index = 0
-        lon_max_index = int(lons.shape[0]) - 1
-    else:
-        lat_min, lat_max, lon_min, lon_max = lat_lons
-
+    if lat_min != None and lat_max != None:
         # The lat variable starts with a great number (around 80) and decreases
         # to around -80)
         # lat_min_index = np.min(np.where(rootgrp.variables['lat'][:] <= lat_min))
         lat_min_index = np.min(np.where(lats <= lat_max))
         lat_max_index = np.max(np.where(lats >= lat_min))
+    else:
+        # Use all values.
+        lat_min_index = 0
+        lat_max_index = int(lats.shape[0]) - 1
 
+    if lon_min != None and lon_max != None:
         # The lon values starts by around -179 and ends around 179.
         lon_min_index = np.min(np.where(lons >= lon_min))
         lon_max_index = np.max(np.where(lons <= lon_max))
+    else:
+        lon_min_index = 0
+        lon_max_index = int(lons.shape[0]) - 1
 
-        LOG.debug("Lat, lon indexes: (%i, %i, %i, %i)." % (lat_min_index, lat_max_index, lon_min_index,
-                                                           lon_max_index))
+    LOG.debug("Lat, lon indexes: (%i, %i, %i, %i)." % (lat_min_index, lat_max_index,
+                                                       lon_min_index, lon_max_index))
     return lat_min_index, lat_max_index, lon_min_index, lon_max_index
 
 
@@ -727,7 +750,7 @@ def start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes, grid_r
                          lats[lat_indexes[0]:lat_indexes[1]],
                          lons[lon_indexes[0]:lon_indexes[1]],
                          grid_res,
-                         args.min_lake_area_km2,
+                         min_lake_area_km2,
                          lat_indexes,
                          lon_indexes,
                          output_queue,
@@ -750,75 +773,29 @@ def do_it(water_mask_bool, lats, lons, grid_res, min_lake_area_km2, lat_indexes,
 
 
 if __name__ == "__main__":
-    import argparse
-
-    def filename(path):
-        if not os.path.isfile(path):
-            raise argparse.ArgumentTypeError("'%s' does not exist. Please \
-specify mask file!" % (path))
-        return path
-
-    DOMAINS = {
-        "fisk": [1.0, 23.3, 2.4, 23.0]
-        }
-
-    def domain(domain_name):
-        if domain_name not in DOMAINS:
-            raise argparse.ArgumentTypeError("'%s' must be one of '%s'." %
-                                             (domain_name,
-                                              "', '".join(DOMAINS)))
-        return DOMAINS[domain_name]
-
-    parser = argparse.ArgumentParser(
-        description='Filtering lakes out of the mask.')
-    parser.add_argument('fine_land_sea_mask', type=filename,
-                        help='The land/sea mask with fine grid.')
-    parser.add_argument('min_lake_area_km2', type=float,
-                        help='The size (km2) of the lakes to remove')
-    parser.add_argument('--grid-resolution', type=float,
-                        help='The size of the output grid, in lat/lons.')
-
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('--domain', type=domain,
-                       help="The domain to create the mask for.",
-                       dest="domain_boundaries")
-    group.add_argument('--domain-boundaries', type=float, nargs=4,
-                       help="The boundaries of the domain: x0, y0, x1, y1.")
-    group.add_argument('--lat-lons', type=float, nargs=4,
-                       help="lat_min, lat_max, lon_min, lon_max.")
-
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('-d', '--debug', action='store_true',
-                       help="Output debugging information.")
-    group.add_argument('-v', '--verbose', action='store_true',
-                       help="Output info.")
-    parser.add_argument('--log-filename', type=str,
-                        help="File used to output logging information.")
-    parser.add_argument('--include-oceans', action='store_true',
-                        help="Include oceans in the mask.")
-    parser.add_argument('-o', '--output', type=str,
-                        help="Output filename.")
-
-    parser.add_argument('--resize-factor', type=float,
-                        help="If set, the output image is reduced by this.",
-                        default=1.0)
-
-    # Do the parser.
-    args = parser.parse_args()
+    import docopt
+    args = docopt.docopt(__doc__, version="Lake filter 0.1")
 
     # Set the log options.
-    if args.debug:
-        logging.basicConfig(filename=args.log_filename, level=logging.DEBUG)
-    elif args.verbose:
-        logging.basicConfig(filename=args.log_filename, level=logging.INFO)
+    if args['--debug']:
+        logging.basicConfig(filename=args['--log-filename'], level=logging.DEBUG)
+    elif args['--verbose']:
+        logging.basicConfig(filename=args['--log-filename'], level=logging.INFO)
     else:
-        logging.basicConfig(filename=args.log_filename, level=logging.WARNING)
+        logging.basicConfig(filename=args['--log-filename'], level=logging.WARNING)
 
     # Output what is in the args variable.
     LOG.debug(args)
 
-    rootgrp = netCDF4.Dataset(args.fine_land_sea_mask, 'r')
+    assert(os.path.isfile(args['<fine_land_sea_mask>']))
+    args['<min_lake_area_km2>'] = float(args['<min_lake_area_km2>'])
+    assert(args['<min_lake_area_km2>'] > 0)
+    args['<lat_min>'] = float(args['<lat_min>']) if args['<lat_min>'] is not None else None
+    args['<lat_max>'] = float(args['<lat_max>']) if args['<lat_max>'] is not None else None
+    args['<lon_min>'] = float(args['<lon_min>']) if args['<lon_min>'] is not None else None
+    args['<lon_max>'] = float(args['<lon_max>']) if args['<lon_max>'] is not None else None
 
+    rootgrp = netCDF4.Dataset(args['<fine_land_sea_mask>'], 'r')
     try:
         # This is the grid resolution of the grids in the input land sea mask
         # netcdf file.
@@ -836,7 +813,8 @@ specify mask file!" % (path))
         lat_min_index, \
             lat_max_index, \
             lon_min_index, \
-            lon_max_index = get_lat_lon_indexes(lats, lons, args.lat_lons)
+            lon_max_index = get_lat_lon_indexes(lats, lons, args['<lat_min>'], args['<lat_max>'],
+                                                args['<lon_min>'], args['<lon_max>'])
 
         resulting_mask_with_removed_lakes = np.zeros((lat_max_index - lat_min_index, lon_max_index - lon_min_index), dtype=np.bool)
         # global_mask_with_removed_lakes = int_water_mask_2_bool_water_mask(global_mask_with_removed_lakes)
@@ -855,7 +833,7 @@ specify mask file!" % (path))
 
         for lat_indexes, lon_indexes in get_slice_indexes(0, len(lats), 0, len(lons)):
             slice_counter += 1
-            start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes, grid_res, args.min_lake_area_km2, output_queue, slice_counter)
+            start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes, grid_res, args['<min_lake_area_km2>'], output_queue, slice_counter)
             # Wait for result.
 
             if slice_counter > number_of_cpus:
