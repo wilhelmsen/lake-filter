@@ -30,8 +30,8 @@ import datetime
 import netCDF4
 import gc
 import time
-
 import multiprocessing as mp
+
 
 class LakeFilterException(Exception):
     pass
@@ -42,25 +42,30 @@ LOG = logging.getLogger(__name__)
 FILL_VALUE = 255  # np.iinfo(img.dtype).max
 
 # Coordinates.
-EARTH_MEAN_RADIUS_KM=6371
-EARTH_MEAN_DIAMETER_KM=2.0*np.pi*EARTH_MEAN_RADIUS_KM
-EARTH_ONE_MEAN_DEG_KM=EARTH_MEAN_DIAMETER_KM/360.0
+EARTH_MEAN_RADIUS_KM = 6371
+EARTH_MEAN_DIAMETER_KM = 2.0 * np.pi * EARTH_MEAN_RADIUS_KM
+EARTH_ONE_MEAN_DEG_KM = EARTH_MEAN_DIAMETER_KM / 360.0
 
 
 def length_of_one_mean_degree_at_latitude_km(latitude):
-    return EARTH_ONE_MEAN_DEG_KM*np.cos(np.deg2rad(latitude))
+    return EARTH_ONE_MEAN_DEG_KM * np.cos(np.deg2rad(latitude))
+
 
 def lons_2_km(longitudes, latitude):
     return longitudes * length_of_one_mean_degree_at_latitude_km(latitude)
 
+
 def lats_2_km(latitudes):
     return latitudes * EARTH_ONE_MEAN_DEG_KM
 
+
 def km_2_lons(distance_km, latitude):
-    return distance_km/length_of_one_mean_degree_at_latitude_km(latitude)
+    return distance_km / length_of_one_mean_degree_at_latitude_km(latitude)
+
 
 def km_2_lats(distance_km):
-    return distance_km/EARTH_ONE_MEAN_DEG_KM
+    return distance_km / EARTH_ONE_MEAN_DEG_KM
+
 
 def get_lat_lon_indexes(lats, lons, lat_min, lat_max, lon_min, lon_max):
     """
@@ -110,7 +115,8 @@ def timer(f):
     def wrapper(*args, **kw):
         t = datetime.datetime.now()
         res = f(*args, **kw)
-        LOG.debug("%s took %0.3fs."%(f.__name__, (datetime.datetime.now() - t).total_seconds()))
+        LOG.debug("%s took %0.3fs." % (f.__name__, (
+                    datetime.datetime.now() - t).total_seconds()))
         return res
     return wrapper
 
@@ -241,7 +247,7 @@ class Contour(object):
                 # without all the full masks of its children.
                 #
                 # This is done with the current self._full_mask, as
-                # self.full_mask is called in self.mask, but here 
+                # self.full_mask is called in self.mask, but here
                 # self._full_mask is not None and therefore the current
                 # version is returned, including the wrong edges.
                 #
@@ -352,6 +358,7 @@ are still not the same!!")
         # Check if the point is inside the contour.
         return cv2.pointPolygonTest(contour.contour_values, point_to_check,
                                     measureDist=False) > 0
+
     @timer
     def insert_contour(self, contour):
         """
@@ -360,47 +367,42 @@ are still not the same!!")
         If it is inside the contour it tries to insert it into its children.
 
         If this does not succede, the contour must be one of the direct
-        children of this contour (self). But the children of this contour 
-        (self) should may be have been inside the current contour (contour).
-        It therefore first tries to insert the children (self.children) into 
+        children of this contour (self). But the children of this contour
+        (self) should may be have been inside the current contour (contour)
+        It therefore first tries to insert the children (self.children) into
         the current contour (contour). After, the contour (cntour) is inserted
         into the this contour (self).
 
         """
-        t = datetime.datetime.now()
         if not contour.is_inside(self):
-            # LOG.debug("Was not inside took %0.3f"%((datetime.datetime.now()-t).total_seconds()))
             return False
-        LOG.debug("Was inside took %0.3f"%((datetime.datetime.now()-t).total_seconds()))
 
         # At this point we know that the contour should be inside this
         # contour (self) somewhere.
-
+        #
         # First try the children.
         was_inserted_into_one_of_the_children = False
         for child in self.children:
-            t = datetime.datetime.now()
             if child.insert_contour(contour):
-                LOG.debug("Inserting contour into child took %0.3f"%((datetime.datetime.now()-t).total_seconds()))
+                LOG.debug("Inserting contour into child")
                 # The contour cannot be inside several children.
                 return True
-
 
         # If the contour (contour) was NOT inserted into one of the children,
         # it is a child of this contour (self).
         #
-        # First, let us make sure the children contours of this contour 
+        # First, let us make sure the children contours of this contour
         # (self) chould not be inserted into the contour (contour).
         self_children = []
+
         while len(self.children) > 0:
             # Use the pop functionality to avoid removing list items
             # in an "unhealthy" way.
             child = self.children.pop()
 
-            t = datetime.datetime.now()
             # Insert the child into the contour (contour).
             if not contour.insert_contour(child):
-                LOG.debug("Inserting child into contour took %0.3f"%((datetime.datetime.now()-t).total_seconds()))
+                LOG.debug("Inserting child into contour")
                 # It is still a child of this contour (self).
                 self_children.append(child)
 
@@ -481,14 +483,15 @@ are still not the same!!")
         Removing all water that is less than threshold inside the current
         contour.
         """
-        LOG.debug("Number of contours from here: %i"%(self.count()))
-        
+        LOG.debug("Number of contours from here: %i" % (self.count()))
+
         # Create a land only mask.
         mask = np.zeros_like(min_lake_area_km2, dtype=np.bool)  # All false.
 
         # Remove for children.
         for child in self.children:
-            mask = mask | child.remove_water_less_than(lats, lons, grid_resolution, min_lake_area_km2)
+            mask = mask | child.remove_water_less_than(lats, lons, grid_resolution,
+                                                       min_lake_area_km2)
 
         # Remove current.
         if self.is_water and self.get_mask_area(lats,
@@ -588,7 +591,6 @@ class Contours(object):
         assert(len(self.hierarky.hierarky) == sum([tc.count() for tc in self._top_contours]))
         return self._top_contours
 
-
     @staticmethod
     @timer
     def get_top_contours(water_mask_bool):
@@ -599,8 +601,8 @@ class Contours(object):
         """
         LOG.debug("Finding contours.")
 
-        # Finding the contours with opencv2. The RETR_CCOMP method returns 
-        # a tree structure of the contours. The structure is saved in 
+        # Finding the contours with opencv2. The RETR_CCOMP method returns
+        # a tree structure of the contours. The structure is saved in
         # the hierarky variable.
         #
         # Not all contours are inserted inside the correct contour. The top
@@ -620,7 +622,7 @@ class Contours(object):
             # If there actually were any contours.
             LOG.debug("Number of contours: %i. Number of entries in hieracry: %i"
                       % (len(contours), len(hierarky[0])))
-            
+
             # top_contours holds all the contours in a correct hierarky.
             top_contours = Contours(contours, hierarky,
                                     water_mask_bool).top_contours
@@ -644,7 +646,6 @@ class Contours(object):
         number_of_top_contours = len(self._top_contours)
         LOG.debug("Finding lost children and inserting them into their parent. \
 Number of top contours: %i" % (number_of_top_contours))
-        t = datetime.datetime.now()
 
         # If the following fails, there are no contours and something is wrong.
         assert(number_of_top_contours > 0)
@@ -674,9 +675,7 @@ Number of top contours: %i" % (number_of_top_contours))
                 # a top contour. Insert as first element.
                 index = 0
                 self._top_contours.insert(index, c)
-        LOG.debug("Total cycles: %i. Took: %s seconds." % (
-                total_counter,
-                (datetime.datetime.now() - t).total_seconds()))
+        LOG.debug("Total cycles: %i." % (total_counter))
         LOG.debug("Done structuring children. Number of top contours: %i (%i)."
                   % (len(self._top_contours),
                      len(self._top_contours) - number_of_top_contours))
@@ -691,7 +690,7 @@ def int_water_mask_2_bool_water_mask(int_water_mask):
     # 0:   Land.
     # Else: Water.
     # Masked: Water.
-    # 
+    #
     # return int_water_mask != 0
     # return ~(int_water_mask == 0)
     return np.array(np.where(int_water_mask != 0, True, False), dtype=np.bool) | \
@@ -710,7 +709,8 @@ def bool_water_mask_2_int_water_mask(bool_water_mask):
 
 
 @timer
-def get_slice_indexes(lat_start, lat_stop, lon_start, lon_stop, slice_step = 400, overlap = 50):
+def get_slice_indexes(lat_start, lat_stop, lon_start, lon_stop, slice_step=400,
+                      overlap=50):
     assert(slice_step > overlap * 2)
     lat_pointer = lat_start
     lon_pointer = lon_start
@@ -721,6 +721,7 @@ def get_slice_indexes(lat_start, lat_stop, lon_start, lon_stop, slice_step = 400
         lat_pointer = lat_start
         lon_pointer += slice_step - overlap
 
+
 def show_masks(masks):
     """
     Showing the masks.
@@ -728,22 +729,19 @@ def show_masks(masks):
     index = 0
     for mask in masks:
         index += 1
-        image = np.array(np.where(mask==True, 255, 0), dtype=np.uint8)
-        factor = 2000.0/max(image.shape)
+        image = np.array(np.where(mask == True, 255, 0), dtype=np.uint8)
+        max_pixels = 2000.0  # Number of pixels in a row.
+        factor = max_pixels / max(image.shape)
         if min(1.0, factor) < 1.0:
             image = cv2.resize(image, (0, 0), fx=factor, fy=factor)
 
-        filename = "/home/hw/Desktop/mask_%i.png"%(index)
+        filename = "/home/hw/Desktop/mask_%i.png" % (index)
         cv2.imwrite(filename, image)
-        print "File written to %s"%(filename)
-
-        # cv2.imshow('Mask %i' % (index), image)
-        # cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        print "File written to %s" % (filename)
 
 
-
-def start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes, grid_res, min_lake_area_km2, output_queue, i):
+def start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes,
+                               grid_res, min_lake_area_km2, output_queue, i):
     # Start the process.
     p = mp.Process(target=do_it,
                    args=(water_mask_bool[lat_indexes[0]:lat_indexes[1], lon_indexes[0]:lon_indexes[1]],
@@ -839,20 +837,21 @@ if __name__ == "__main__":
             if slice_counter > number_of_cpus:
                 LOG.debug("Waiting for output queue.")
                 i, lat_indexes, lon_indexes, mask = output_queue.get()
-                LOG.debug("Got %i"%(i))
+                LOG.debug("Got %i" % (i))
                 # Merge the masks.
-                resulting_mask_with_removed_lakes[lat_indexes[0]:lat_indexes[1],lon_indexes[0]:lon_indexes[1]] |= mask
+                resulting_mask_with_removed_lakes[lat_indexes[0]:lat_indexes[1],
+                                                  lon_indexes[0]:lon_indexes[1]] |= mask
 
         for j in range(number_of_cpus):
             LOG.debug("Waiting for output queue.")
             i, lat_indexes, lon_indexes, mask = output_queue.get()
-            LOG.debug("Got %i"%(i))
+            LOG.debug("Got %i" % (i))
             # Merge the masks.
-            resulting_mask_with_removed_lakes[lat_indexes[0]:lat_indexes[1],lon_indexes[0]:lon_indexes[1]] |= mask
+            resulting_mask_with_removed_lakes[lat_indexes[0]:lat_indexes[1],
+                                              lon_indexes[0]:lon_indexes[1]] |= mask
 
     finally:
         rootgrp.close()
-        
 
     LOG.debug("Showing result.")
     show_masks([resulting_mask_with_removed_lakes, water_mask_bool])
