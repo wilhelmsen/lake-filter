@@ -1,27 +1,5 @@
 #!/usr/bin/env python
 # coding: utf-8
-__doc__ = """Lake filter.
-
-Removes water (lakes) of a certain size, based on the input map.
-
-Usage:
-  {filename} <fine_land_sea_mask> <min_lake_area_km2> [--domain <domain> | (--lats <lat_min> <lat_max> --lons <lon_min> <lon_max>)] [-d|-v] [--log-filename <logfile>]
-  {filename} (-h | --help)
-
-Positional arguments:
-  fine_land_sea_mask    The land/sea mask with fine grid.
-  min_lake_area_km2     The size (km2) of the lakes to remove
-
-Options:
-  -h, --help                       Show this help message and exit.
-  --domain=<domain>                The domain to create the mask for. Pick from <list of domains>.
-  --lats                           Latitude boundaries. Min value and max value.
-  --lons                           Longitude boundaries. Min value and max value.
-  -d --debug                       Output debugging information.
-  -v --verbose                     Output info.
-  --log-filename <filename>        File used to output logging information.
-""".format(filename=__file__)
-
 import logging
 import os
 import numpy as np
@@ -31,6 +9,35 @@ import netCDF4
 import gc
 import time
 import multiprocessing as mp
+
+import decorators
+import domain
+
+__doc__ = """Lake filter.
+
+Removes water (lakes) of a certain size, based on the input map.
+
+Usage:
+  {filename} <fine_land_sea_mask> <min_lake_area_km2> (--resolution <res> | (--dlat <dlat> --dlon <dlon>)) [--domain <domain> | (--lats <south> <north> --lons <west> <east>)] [-d|-v] [--log-filename=<filename>]
+  {filename} (-h | --hep)
+
+Positional arguments:
+  fine_land_sea_mask    The land/sea mask with fine grid.
+  min_lake_area_km2     The size (km2) of the lakes to remove
+
+Options:
+  -h, --help                       Show this help message and exit.
+  --domain=<domain>                The domain to create the mask for.
+                                   Available domains: ["{domains}"].
+  --lats                           Latitude boundaries. Min value and max value.
+  --lons                           Longitude boundaries. Min value and max value.
+  --resolution=<res>               Output resolution. Equals: dlat = dlon = resolution.
+  --dlat=<dlat>                    Delta latitude. Latitude steps.
+  --dlon=<dlon>                    Delta longitude. Longitude steps.
+  -d --debug                       Output debugging information.
+  -v --verbose                     Output info.
+  --log-filename=<filename>        File used to output logging information.
+""".format(domains="\", \"".join(domain.DOMAINS.keys()), filename=__file__)
 
 
 class LakeFilterException(Exception):
@@ -67,7 +74,24 @@ def km_2_lats(distance_km):
     return distance_km / EARTH_ONE_MEAN_DEG_KM
 
 
-def get_lat_lon_indexes(lats, lons, lat_min, lat_max, lon_min, lon_max):
+def get_max_min_indexes(array, min_value, max_value):
+    """
+    Gets indexes where the array is
+    """
+    min_value, max_value = min(min_value, max_value), max(min_value, max_value)
+    LOG.debug("Getting range index. min_value: %f. max_value: %f" % (min_value,
+                                                                     max_value))
+    indexes = np.where(
+        (array >= min_value) &
+        (array <= max_value)
+        )
+    
+    # import pdb; pdb.set_trace()
+    return np.min(indexes), np.max(indexes)
+
+
+def get_lat_lon_indexes(lats, lons, lat_min, lat_max,
+                        lon_min, lon_max, dlat, dlon):
     """
     Gets the indexes that corresponds to the ranges given in the input.
 
@@ -87,21 +111,37 @@ def get_lat_lon_indexes(lats, lons, lat_min, lat_max, lon_min, lon_max):
     1, 2, 2, 6
 
     """
-    if lat_min != None and lat_max != None:
+    if lat_min is not None and lat_max is not None:
         # The lat variable starts with a great number (around 80) and decreases
         # to around -80)
         # lat_min_index = np.min(np.where(rootgrp.variables['lat'][:] <= lat_min))
-        lat_min_index = np.min(np.where(lats <= lat_max))
-        lat_max_index = np.max(np.where(lats >= lat_min))
+
+        # DENNE:
+        #lat_min_index = np.min(np.where(lats <= lat_max + dlat))
+        #lat_max_index = np.max(np.where(lats >= lat_min - dlat))
+        lat_min, lat_max = min(lat_min, lat_max), max(lat_min, lat_max)
+        lat_min_index, lat_max_index = get_max_min_indexes(lats,
+                                                           lat_min - dlat,
+                                                           lat_max + dlat)
     else:
         # Use all values.
         lat_min_index = 0
         lat_max_index = int(lats.shape[0]) - 1
 
-    if lon_min != None and lon_max != None:
+    # Remember: lons starts by highest number. High number => low index.
+    if lon_min is not None and lon_max is not None:
         # The lon values starts by around -179 and ends around 179.
-        lon_min_index = np.min(np.where(lons >= lon_min))
-        lon_max_index = np.max(np.where(lons <= lon_max))
+        #lon_min_index = np.min(np.where(lons >= lon_max + dlon))
+        #lon_max_index = np.min(np.where(lons >= lon_max - dlon))
+
+        # DENNE:
+        #lon_min_index = np.min(np.where(lons >= lon_min - dlon))
+        #lon_max_index = np.max(np.where(lons <= lon_max + dlon))
+
+        lon_min, lon_max = min(lon_min, lon_max), max(lon_min, lon_max)
+        lon_min_index, lon_max_index = get_max_min_indexes(lons,
+                                                           lon_min - dlat,
+                                                           lon_max + dlat)
     else:
         lon_min_index = 0
         lon_max_index = int(lons.shape[0]) - 1
@@ -109,16 +149,6 @@ def get_lat_lon_indexes(lats, lons, lat_min, lat_max, lon_min, lon_max):
     LOG.debug("Lat, lon indexes: (%i, %i, %i, %i)." % (lat_min_index, lat_max_index,
                                                        lon_min_index, lon_max_index))
     return lat_min_index, lat_max_index, lon_min_index, lon_max_index
-
-
-def timer(f):
-    def wrapper(*args, **kw):
-        t = datetime.datetime.now()
-        res = f(*args, **kw)
-        LOG.debug("%s took %0.3fs." % (f.__name__, (
-                    datetime.datetime.now() - t).total_seconds()))
-        return res
-    return wrapper
 
 
 class HierarkyNode(object):
@@ -359,7 +389,7 @@ are still not the same!!")
         return cv2.pointPolygonTest(contour.contour_values, point_to_check,
                                     measureDist=False) > 0
 
-    @timer
+    @decorators.timer
     def insert_contour(self, contour):
         """
         Trying to insert the given contour into this contour (self).
@@ -416,7 +446,7 @@ are still not the same!!")
         # GREAT SUCCESS!!!
         return True
 
-    @timer
+    @decorators.timer
     def get_mask_area(self, lats, lons, grid_resolution, threshold=None):
         """
         Calculates the area of a contour, where the children has
@@ -463,21 +493,21 @@ are still not the same!!")
         # Check if that pixel is water or not.
         return self.bool_water_mask[lat_index, lon_index]
 
-    @timer
+    @decorators.timer
     def has_parent(self):
         """
         Checks if contour has parents. I.e. if it is a top contour or not.
         """
         return self.parent is not None
 
-    @timer
+    @decorators.timer
     def has_children(self):
         """
         Checks if the contour has children.
         """
         return len(self.children) > 0
 
-    @timer
+    @decorators.timer
     def remove_water_less_than(self, lats, lons, grid_resolution, min_lake_area_km2):
         """
         Removing all water that is less than threshold inside the current
@@ -504,7 +534,7 @@ are still not the same!!")
         # Return the resulting mask.
         return mask
 
-    @timer
+    @decorators.timer
     def count(self):
         """
         Counts the number of contours inside a contour, including
@@ -517,7 +547,7 @@ are still not the same!!")
 
 
 class Contours(object):
-    @timer
+    @decorators.timer
     def __init__(self, contours, hierarky, bool_water_mask):
         self.hierarky = Hierarky(hierarky)
         self.bool_water_mask = bool_water_mask
@@ -525,7 +555,7 @@ class Contours(object):
         self.contour_array = contours
 
     @property
-    @timer
+    @decorators.timer
     def top_contours(self):
         """
         The top contours from this hierarky.
@@ -592,7 +622,7 @@ class Contours(object):
         return self._top_contours
 
     @staticmethod
-    @timer
+    @decorators.timer
     def get_top_contours(water_mask_bool):
         """
         Getting the contours from the intput water mask. The values in the
@@ -631,7 +661,7 @@ class Contours(object):
         # list is returned. Else the top contours of the water mask is returned.
         return top_contours
 
-    @timer
+    @decorators.timer
     def _find_parents_for_lost_children(self):
         """
         When the contours are made by openCV, some contours are not inserted
@@ -681,7 +711,7 @@ Number of top contours: %i" % (number_of_top_contours))
                      len(self._top_contours) - number_of_top_contours))
 
 
-@timer
+@decorators.timer
 def int_water_mask_2_bool_water_mask(int_water_mask):
     """
     Converts an int mask to a boolean mask. I.e. every value that is zero is land.
@@ -697,7 +727,7 @@ def int_water_mask_2_bool_water_mask(int_water_mask):
         np.array(np.where(int_water_mask.mask == True, True, False), dtype=np.bool)
 
 
-@timer
+@decorators.timer
 def bool_water_mask_2_int_water_mask(bool_water_mask):
     """
     Converts a boolean mask to int8 mask. I.e. if the boolean mask is True
@@ -708,9 +738,9 @@ def bool_water_mask_2_int_water_mask(bool_water_mask):
     return np.array(np.where(bool_water_mask == True, 255, 0), dtype=np.uint8)
 
 
-@timer
-def get_slice_indexes(lat_start, lat_stop, lon_start, lon_stop, slice_step=400,
-                      overlap=50):
+@decorators.timer
+def get_slice_indexes(lat_start, lat_stop, lon_start, lon_stop,
+                      slice_step=400, overlap=50):
     assert(slice_step > overlap * 2)
     lat_pointer = lat_start
     lon_pointer = lon_start
@@ -730,6 +760,9 @@ def show_masks(masks):
     for mask in masks:
         index += 1
         image = np.array(np.where(mask == True, 255, 0), dtype=np.uint8)
+        #if np.all(image):
+        #    raise LakeFilterException("All values True. All water.")
+
         max_pixels = 2000.0  # Number of pixels in a row.
         factor = max_pixels / max(image.shape)
         if min(1.0, factor) < 1.0:
@@ -757,7 +790,158 @@ def start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes,
     p.start()
 
 
-@timer
+def create_new_mask(resulting_mask_with_removed_lakes, lats, lons, domain,
+                    dlat, dlon, water_limit_percentage=0.1):
+    """
+    Downscaling the mask to an other resolution, corresponding to dlat (delta
+    lat) and dlon (delta lon).
+
+    The input mask is the full resolution mask where the lakes have already
+    been removed.
+
+    The lats and the lons are the full resolution lats and lons corresponding
+    to the values in the resulting_mask_with_removed_lakes.
+
+    +--------+--------+--------+--------+--------+  0
+    |        |        |        |        |        |
+    +--------+--------+--------+--------+--------+  1
+    |    -   |   -    |   -    |   -    |        |
+    +--------+--------+--------+--------+--------+  2
+    |    -   |   -    |   -    |   -    |        |
+    +--------+--------+--------+--------+--------+  3
+    |   -    |   x    |    -   |   -    |        |    lats
+    +--------+--------+--------+--------+--------+  4
+    |   -    |   -    |   -    |   -    |        |
+    +--------+--------+--------+--------+--------+  5
+    |   -    |   -    |   -    |   -    |        |
+    +--------+--------+--------+--------+--------+  6
+    |        |        |        |        |        |
+    +--------+--------+--------+--------+--------+  7
+    0        1        2        3        4        5
+                         lons
+
+    For every point that is checked (x), the surrounding points (-)
+    will also count for that point. The number of points is determined
+    by the resolution (dlat, dlon).
+
+    If a certain percentage of the points is water
+    (water_limit_percentage), the new point, with the new resolution,
+    will also be water.
+    """
+    # Start points.
+    start_lat = max(domain.south, domain.north)
+    stop_lat = min(domain.south, domain.north)
+
+    # First create an "indexed list.
+    resulting_mask = []
+    lat = start_lat
+    while lat >= stop_lat:
+        resulting_mask.append(None)
+        lat -= dlat
+
+    min_lon = min(domain.west, domain.east)
+    max_lon = max(domain.west, domain.east)
+
+    # The resulting mask is filled with new values that corresponds to
+    i = 0
+    number_of_cpus = mp.cpu_count()
+    output_queue = mp.Queue()
+
+    lat = start_lat
+    while lat >= stop_lat:
+        min_lat_index, max_lat_index = get_max_min_indexes(lats,
+                                                           lat - dlat / 2,
+                                                           lat + dlat / 2)
+
+        start_fisk_in_new_process(resulting_mask_with_removed_lakes,
+                                  lons,
+                                  min_lon,
+                                  max_lon,
+                                  dlon,
+                                  min_lat_index,
+                                  max_lat_index,
+                                  water_limit_percentage,
+                                  output_queue,
+                                  i)
+
+        if i >= number_of_cpus:
+            # Append the row to the new mask.
+            j, resulting_row = output_queue.get()
+            resulting_mask[j] = resulting_row
+
+        # Next row.
+        lat -= dlat
+        i += 1
+
+    for i in range(number_of_cpus):
+        j, resulting_row = output_queue.get()
+        resulting_mask[j] = resulting_row
+
+    resulting_array = np.array(resulting_mask, dtype=np.bool)
+    return resulting_array
+
+
+def start_fisk_in_new_process(resulting_mask_with_removed_lakes,
+                              lons,
+                              start_lon,
+                              max_lon,
+                              dlon,
+                              min_lat_index,
+                              max_lat_index,
+                              water_limit_percentage,
+                              output_queue,
+                              i):
+    # Start the process.
+    p = mp.Process(target=fisk,
+                   args=(resulting_mask_with_removed_lakes,
+                         lons,
+                         start_lon,
+                         max_lon,
+                         dlon,
+                         min_lat_index,
+                         max_lat_index,
+                         water_limit_percentage,
+                         output_queue,
+                         i))
+    LOG.debug("Starting fisk. %i"%(i))
+    p.start()
+
+
+def fisk(resulting_mask_with_removed_lakes, lons, start_lon, max_lon,
+         dlon, min_lat_index, max_lat_index, water_limit_percentage,
+         output_queue, i):
+    lon = start_lon
+    resulting_row = []
+
+    #while lon <= max(domain.west, domain.east):
+    while lon <= max_lon:
+        min_lon_index, max_lon_index = get_max_min_indexes(lons,
+                                                           lon - dlon / 2,
+                                                           lon + dlon / 2)
+
+        mask_slice = resulting_mask_with_removed_lakes[min_lat_index:max_lat_index,
+                                                       min_lon_index:max_lon_index]
+        
+        # Make sure the indexes are correct.
+        assert((max_lat_index - min_lat_index) *
+               (max_lon_index - min_lon_index) ==
+               mask_slice.size)
+
+        # Calculate the water percentage.
+        # Number of nonzero (in this case True) in the slice divided by the
+        # total number of items in the slice.
+        water_percentage = np.count_nonzero(mask_slice) / float(mask_slice.size)
+
+        # If there is more than a certain percentage of water in the area.
+        resulting_row.append(water_percentage > water_limit_percentage)
+
+        # Next row
+        lon += dlon
+    output_queue.put([i, resulting_row])
+
+
+
+@decorators.timer
 def do_it(water_mask_bool, lats, lons, grid_res, min_lake_area_km2, lat_indexes, lon_indexes, output_queue, i):
     resulting_mask = np.zeros(water_mask_bool.shape, dtype=np.bool)
     if np.all(water_mask_bool):
@@ -785,14 +969,40 @@ if __name__ == "__main__":
     # Output what is in the args variable.
     LOG.debug(args)
 
+    # Make sure that the input sea mask exists.
     assert(os.path.isfile(args['<fine_land_sea_mask>']))
-    args['<min_lake_area_km2>'] = float(args['<min_lake_area_km2>'])
-    assert(args['<min_lake_area_km2>'] > 0)
-    args['<lat_min>'] = float(args['<lat_min>']) if args['<lat_min>'] is not None else None
-    args['<lat_max>'] = float(args['<lat_max>']) if args['<lat_max>'] is not None else None
-    args['<lon_min>'] = float(args['<lon_min>']) if args['<lon_min>'] is not None else None
-    args['<lon_max>'] = float(args['<lon_max>']) if args['<lon_max>'] is not None else None
 
+    # Convert the sea area to float
+    args['<min_lake_area_km2>'] = float(args['<min_lake_area_km2>'])
+    # and make sure that it is a positive number!
+    assert(args['<min_lake_area_km2>'] > 0)
+
+    # Set the to the delta lat and delta lon.
+    if args['--resolution'] is not None:
+        args['--dlat'] = args['--resolution']
+        args['--dlon'] = args['--resolution']
+
+    # Convert the resolutions to float.
+    if args['--dlat'] is not None:
+        args['--dlat'] = float(args['--dlat'])
+        args['--dlon'] = float(args['--dlon'])
+
+    # Determine the domain.
+    if args['--domain'] is not None:
+        assert(args['--domain'] in domain.DOMAINS)
+        domain = domain.DOMAINS[args['--domain']]
+    elif args['<north>'] is not None:
+        domain = domain.Domain("Custom",
+                               args['<west>'],
+                               args['<east>'],
+                               args['<south>'],
+                               args['<north>']
+                               )
+    else:
+        # Use global domain as default.
+        domain = domain.DOMAINS["GLB"]
+
+    LOG.debug("Read input file, %s." % (args['<fine_land_sea_mask>']))
     rootgrp = netCDF4.Dataset(args['<fine_land_sea_mask>'], 'r')
     try:
         # This is the grid resolution of the grids in the input land sea mask
@@ -811,10 +1021,28 @@ if __name__ == "__main__":
         lat_min_index, \
             lat_max_index, \
             lon_min_index, \
-            lon_max_index = get_lat_lon_indexes(lats, lons, args['<lat_min>'], args['<lat_max>'],
-                                                args['<lon_min>'], args['<lon_max>'])
+            lon_max_index = get_lat_lon_indexes(lats,
+                                                lons,
+                                                domain.south,
+                                                domain.north,
+                                                domain.west,
+                                                domain.east,
+                                                args['--dlat'],
+                                                args['--dlon'])
 
-        resulting_mask_with_removed_lakes = np.zeros((lat_max_index - lat_min_index, lon_max_index - lon_min_index), dtype=np.bool)
+        if lat_min_index == 0:
+            domain.south = min(lats) + args['--dlat']
+        if lat_max_index == len(lats) - 1:
+            domain.north = max(lats) - args['--dlat']
+
+        if lon_min_index == 0:
+            domain.west = min(lons) + args['--dlon']
+        if lon_max_index == len(lons) - 1:
+            domain.east = max(lons) - args['--dlon']
+
+        resulting_mask_with_removed_lakes = np.zeros((lat_max_index - lat_min_index,
+                                                      lon_max_index - lon_min_index),
+                                                     dtype=np.bool)
         # global_mask_with_removed_lakes = int_water_mask_2_bool_water_mask(global_mask_with_removed_lakes)
 
         number_of_cpus = mp.cpu_count()
@@ -827,13 +1055,14 @@ if __name__ == "__main__":
         LOG.debug("Getting lats.")
         lats = lats[lat_min_index:lat_max_index]
         LOG.debug("Getting lons.")
-        lots = lons[lon_max_index:lon_max_index]
+        lons = lons[lon_min_index:lon_max_index]
 
+        # Start the calculations.
         for lat_indexes, lon_indexes in get_slice_indexes(0, len(lats), 0, len(lons)):
             slice_counter += 1
             start_do_it_in_new_process(water_mask_bool, lat_indexes, lon_indexes, grid_res, args['<min_lake_area_km2>'], output_queue, slice_counter)
-            # Wait for result.
 
+            # Wait for result.
             if slice_counter > number_of_cpus:
                 LOG.debug("Waiting for output queue.")
                 i, lat_indexes, lon_indexes, mask = output_queue.get()
@@ -853,7 +1082,12 @@ if __name__ == "__main__":
     finally:
         rootgrp.close()
 
+    # Create the new mask, with new indexes.
+    new_mask = create_new_mask(resulting_mask_with_removed_lakes,
+                               lats, lons, domain, args['--dlat'], args['--dlon'])
+
     LOG.debug("Showing result.")
-    show_masks([resulting_mask_with_removed_lakes, water_mask_bool])
+    show_masks([new_mask, ])
+    # show_masks([resulting_mask_with_removed_lakes, water_mask_bool])
 
     LOG.debug("DONE")
