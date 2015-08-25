@@ -13,13 +13,15 @@ class Domain:
         self.north = float(north)
 
     def __str__(self):
-        return "%s: %0.3f %0.3f %0.3f %0.3f" % (
+        return "%s: %0.3f, %0.3f, %0.3f, %0.3f," % (
             self.name,
             self.west,
             self.east,
             self.south,
             self.north,
             )
+    def __repr__(self):
+        return self.__str__()
 
 DOMAINS = {
     "ARC": Domain("Arctic", -179.995, 179.955, 58.000, 88.000),
